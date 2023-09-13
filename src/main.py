@@ -93,7 +93,7 @@ app.include_router(ogc_api.router)
 if settings.cors_origins:
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.cors_origins,
+        allow_origins=["*"],
         allow_credentials=True,
         allow_methods=["GET"],
         allow_headers=["*"],
