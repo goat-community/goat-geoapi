@@ -1,23 +1,24 @@
 // See https://aka.ms/vscode-remote/containers for the
 // documentation about the devcontainer.json format
 {
-    "name": "API DevContainer",
+    "name": "GOAT GeoAPI DevContainer",
     "dockerComposeFile": [
-        "../../docker-compose.yaml"
+        "docker-compose.yml"
     ],
-    "service": "geoapi",
-    "workspaceFolder": "/api",
+    "service": "api",
+    "workspaceFolder": "/app",
     "shutdownAction": "none",
     "mounts": [
-        "source=${localWorkspaceFolder},target=/api,type=bind,consistency=cached"
-    ],    
+        "source=${localWorkspaceFolder}/../..,target=/goat,type=bind,consistency=cached"
+    ],
     "remoteEnv": {
-        "GIT_WORK_TREE": "/auth_repo",
-        "GIT_DIR": "/auth_repo/.git"
+        "GIT_WORK_TREE": "/goat",
+        "GIT_DIR": "/goat/.git"
     },
     "customizations": {
         "vscode": {
             "extensions": [
+                "github.copilot",
                 "ms-python.python",
                 "ms-vscode.cpptools",
                 "twxs.cmake",
@@ -25,18 +26,20 @@
                 "njpwerner.autodocstring",
                 "donjayamanne.githistory",
                 "ms-python.black-formatter",
-                "genieai.chatgpt-vscode",
                 "charliermarsh.ruff",
                 "github.copilot-nightly"
             ],
             "settings": {
                 "python.defaultInterpreterPath": "/usr/local/bin/python",
+                "python.formatting.provider": "black",
                 "editor.formatOnSave": true,
                 "editor.codeActionsOnSave": {
                     "source.fixAll": true
-                },
-                "python.formatting.provider": "black"
+                }
             }
         }
-    }
+    },
+    "runServices": [
+        "api"
+    ]
 }
