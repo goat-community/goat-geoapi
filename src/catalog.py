@@ -48,14 +48,14 @@ class LayerCatalog:
                         ST_XMax(e.e) AS xmax,
                         ST_YMax(e.e) AS ymax
                     FROM customer.layer l, LATERAL ST_Envelope(extent) e
-                    WHERE feature_layer_type IS NOT NULL
+                    WHERE type IN ('feature_layer', 'table_layer')
                     {condition_layer_id}
                 )
                 SELECT jsonb_build_object('user_id', replace(user_id::text, '-', ''), 'id', replace(id::text, '-', ''), 'name', name, 'bounds', COALESCE(
                         array[xmin, ymin, xmax, ymax],
                         ARRAY[-180, -90, 180, 90]
                     ), 'attribute_mapping', attribute_mapping, 'geom_type', feature_layer_geometry_type)
-                FROM with_bounds;
+                FROM with_bounds
             """
             rows = await conn.fetch(sql)
             return [json.loads(dict(row)["jsonb_build_object"]) for row in rows]
