@@ -25,17 +25,20 @@ from tipg.settings import (
     CustomSQLSettings,
     DatabaseSettings,
     PostgresSettings,
+    MVTSettings,
 )
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 from starlette_cramjam.middleware import CompressionMiddleware
 from src.catalog import LayerCatalog
-
+from fastapi.openapi.utils import get_openapi
 
 settings = APISettings()
 postgres_settings = PostgresSettings()
 db_settings = DatabaseSettings()
 custom_sql_settings = CustomSQLSettings()
+mvt_settings = MVTSettings()
+mvt_settings.max_features_per_tile = 50000
 
 # Monkey patch the function that need modification
 Collection._from = _from
@@ -88,6 +91,24 @@ ogc_api = Endpoints(
     with_tiles_viewer=settings.add_tiles_viewer,
 )
 app.include_router(ogc_api.router)
+
+# Patch openapi schema
+def custom_openapi():
+    openapi_schema = get_openapi(
+        title="GOAT GeoAPI",
+        version="3.1.0",
+        description="GOAT GeoAPI",
+        routes=app.routes,
+    )
+
+    # Delete GeometryCollection
+    del openapi_schema["components"]["schemas"]["GeometryCollection"]
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi
+
 
 # Set all CORS enabled origins
 if settings.cors_origins:
