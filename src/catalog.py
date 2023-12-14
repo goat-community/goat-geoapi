@@ -48,7 +48,7 @@ class LayerCatalog:
                         ST_XMax(e.e) AS xmax,
                         ST_YMax(e.e) AS ymax
                     FROM customer.layer l, LATERAL ST_Envelope(extent) e
-                    WHERE type IN ('feature')
+                    WHERE type IN ('feature', 'table')
                     {condition_layer_id}
                 )
                 SELECT jsonb_build_object('user_id', replace(user_id::text, '-', ''), 'id', replace(id::text, '-', ''), 'name', name, 'bounds', COALESCE(
@@ -75,16 +75,21 @@ class LayerCatalog:
                 )
                 columns.append(column)
 
-            # Append geometry column
-            geom_col = Column(
-                name="geom",
-                type="geometry",
-                description="geom",
-                geometry_type="Geometry",
-                srid=4326,
-                bounds=obj["bounds"],
-            )
-            columns.append(geom_col)
+            # Get geometry column if geom_type is not None
+            if obj["geom_type"]:
+                geom_col = Column(
+                    name="geom",
+                    type="geometry",
+                    description="geom",
+                    geometry_type=obj["geom_type"],
+                    srid=4326,
+                    bounds=obj["bounds"],
+                )
+                columns.append(geom_col)
+                table = obj["geom_type"] + "_" + obj["user_id"]
+            else:
+                geom_col = None
+                table = "no_geometry" + "_" + obj["user_id"]
 
             # Append ID column
             id_col = Column(name="id", description="id", type="integer")
@@ -94,7 +99,7 @@ class LayerCatalog:
             collection = Collection(
                 type="Table",
                 id="user_data." + obj["id"],
-                table=obj["geom_type"] + "_" + obj["user_id"],
+                table=table,
                 schema="user_data",
                 id_column="id",
                 geometry_column=geom_col,
