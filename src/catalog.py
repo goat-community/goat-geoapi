@@ -48,7 +48,7 @@ class LayerCatalog:
                         ST_XMax(e.e) AS xmax,
                         ST_YMax(e.e) AS ymax
                     FROM customer.layer l, LATERAL ST_Envelope(extent) e
-                    WHERE type IN ('feature', 'table')
+                    WHERE type IN ('feature')
                     {condition_layer_id}
                 )
                 SELECT jsonb_build_object('user_id', replace(user_id::text, '-', ''), 'id', replace(id::text, '-', ''), 'name', name, 'bounds', COALESCE(
