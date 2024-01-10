@@ -231,6 +231,13 @@ def replace_properties(data, replacements):
             replace_properties(item, replacements)
 
 
+def format_to_uuid(hex_string):
+    if len(hex_string) != 32:
+        raise ValueError("The input string must be exactly 32 characters long.")
+
+    return f"{hex_string[:8]}-{hex_string[8:12]}-{hex_string[12:16]}-{hex_string[16:20]}-{hex_string[20:]}"
+
+
 def filter_query(
     request: Request,
     query: Annotated[
@@ -238,6 +245,13 @@ def filter_query(
     ] = None,
 ) -> Optional[AstType]:
     """Parse Filter Query."""
+
+    # Get layer_id from collectionId
+    collectionId = request.path_params["collectionId"].split(".")[1]
+    filter_layer_id = {
+        "op": "=",
+        "args": [{"property": "layer_id"}, format_to_uuid(collectionId)],
+    }
 
     if query is not None:
         layer = request.app.state.collection_catalog["collections"].get(
@@ -250,8 +264,12 @@ def filter_query(
         cql_dict = json.loads(query)
         replace_properties(cql_dict, column_mapping)
 
-        data = cql2_json_parser(json.dumps(cql_dict))
-        print(data)
-        return data
+        # Add layer_id filter
+        cql_dict = {"op": "and", "args": [cql_dict, filter_layer_id]}
 
-    return None
+        data = cql2_json_parser(json.dumps(cql_dict))
+        return data
+    else:
+        cql_dict = filter_layer_id
+
+    return cql2_json_parser(json.dumps(cql_dict))

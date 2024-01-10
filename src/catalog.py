@@ -51,7 +51,7 @@ class LayerCatalog:
                     WHERE type IN ('feature', 'table')
                     {condition_layer_id}
                 )
-                SELECT jsonb_build_object('user_id', replace(user_id::text, '-', ''), 'id', replace(id::text, '-', ''), 'name', name, 'bounds', COALESCE(
+                SELECT jsonb_build_object('layer_id', id, 'user_id', replace(user_id::text, '-', ''), 'id', replace(id::text, '-', ''), 'name', name, 'bounds', COALESCE(
                         array[xmin, ymin, xmax, ymax],
                         ARRAY[-180, -90, 180, 90]
                     ), 'attribute_mapping', attribute_mapping, 'geom_type', feature_layer_geometry_type)
@@ -66,6 +66,11 @@ class LayerCatalog:
         collections = {}
         for obj in layer_objs:
             columns = []
+
+            # Append layer id column
+            layer_id_col = Column(name="layer_id", type="text", description="layer_id")
+            columns.append(layer_id_col)
+
             # Loop through attributes and create column objects
             for k in obj["attribute_mapping"]:
                 column = Column(
