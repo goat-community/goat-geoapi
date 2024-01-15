@@ -88,28 +88,6 @@ app = FastAPI(
     docs_url="/api.html",
     lifespan=lifespan,
 )
-# Create Endpoints
-ogc_api = Endpoints(
-    title=settings.name,
-    with_tiles_viewer=settings.add_tiles_viewer,
-)
-app.include_router(ogc_api.router)
-
-# Patch openapi schema
-def custom_openapi():
-    openapi_schema = get_openapi(
-        title="GOAT GeoAPI",
-        version="3.1.0",
-        description="GOAT GeoAPI",
-        routes=app.routes,
-    )
-
-    # Delete GeometryCollection
-    del openapi_schema["components"]["schemas"]["GeometryCollection"]
-    app.openapi_schema = openapi_schema
-    return app.openapi_schema
-
-app.openapi = custom_openapi
 
 # Set all CORS enabled origins
 if settings.cors_origins:
@@ -120,6 +98,29 @@ if settings.cors_origins:
         allow_methods=["GET"],
         allow_headers=["*"],
     )
+
+# Create Endpoints
+ogc_api = Endpoints(
+    title=settings.name,
+    with_tiles_viewer=settings.add_tiles_viewer,
+)
+app.include_router(ogc_api.router)
+
+# # Patch openapi schema
+# def custom_openapi():
+#     openapi_schema = get_openapi(
+#         title="GOAT GeoAPI",
+#         version="3.1.0",
+#         description="GOAT GeoAPI",
+#         routes=app.routes,
+#     )
+
+#     # Delete GeometryCollection
+#     del openapi_schema["components"]["schemas"]["GeometryCollection"]
+#     app.openapi_schema = openapi_schema
+#     return app.openapi_schema
+
+# app.openapi = custom_openapi
 app.add_middleware(CacheControlMiddleware, cachecontrol=settings.cachecontrol)
 app.add_middleware(CompressionMiddleware)
 
@@ -132,4 +133,4 @@ app.add_middleware(CompressionMiddleware)
 )
 def ping():
     """Health check."""
-    return {"ping": "pong!"}
+    return {"ping": "pongpong!"}
