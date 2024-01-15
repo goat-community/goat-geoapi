@@ -106,7 +106,7 @@ class LayerCatalog:
                 id="user_data." + obj["id"],
                 table=table,
                 schema="user_data",
-                id_column="id",
+                id_column=id_col,
                 geometry_column=geom_col,
                 properties=columns,
             )

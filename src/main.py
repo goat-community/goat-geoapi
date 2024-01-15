@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from tipg import __version__ as tipg_version
 from tipg.collections import Collection
 from tipg import dependencies
-from src.exts import _from, _select_no_geo, get_column, filter_query, _where
+from src.exts import _from, _select_no_geo, get_column, filter_query, _where, Operator as OperatorPatch
 
 # Monkey patch filter query here because it needs to be patched before used by import down
 dependencies.filter_query = filter_query
@@ -27,6 +27,7 @@ from tipg.settings import (
     PostgresSettings,
     MVTSettings,
 )
+from tipg.filter.filters import Operator
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 from starlette_cramjam.middleware import CompressionMiddleware
@@ -41,10 +42,12 @@ mvt_settings = MVTSettings()
 mvt_settings.max_features_per_tile = 50000
 
 # Monkey patch the function that need modification
+Operator.OPERATORS = OperatorPatch.OPERATORS
 Collection._from = _from
 Collection._where = _where
 Collection._select_no_geo = _select_no_geo
 Collection.get_column = get_column
+
 
 
 @asynccontextmanager
@@ -63,14 +66,14 @@ async def lifespan(app: FastAPI):
     app.state.collection_catalog = await layer_catalog.init()
     await layer_catalog.disconnect()
 
-    # Listen to the layer_changes channel
+    # # Listen to the layer_changes channel
     layer_catalog_listen = LayerCatalog(app.state.collection_catalog)
     await layer_catalog_listen.connect()
     await layer_catalog_listen.listen()
 
     yield
 
-    # Unlisten to layer_changes channel and close the Connection Pool
+    # # Unlisten to layer_changes channel and close the Connection Pool
     await layer_catalog_listen.unlisten()
     await layer_catalog_listen.disconnect()
 
@@ -106,9 +109,7 @@ def custom_openapi():
     app.openapi_schema = openapi_schema
     return app.openapi_schema
 
-
 app.openapi = custom_openapi
-
 
 # Set all CORS enabled origins
 if settings.cors_origins:
@@ -121,7 +122,6 @@ if settings.cors_origins:
     )
 app.add_middleware(CacheControlMiddleware, cachecontrol=settings.cachecontrol)
 app.add_middleware(CompressionMiddleware)
-
 
 @app.get(
     "/healthz",

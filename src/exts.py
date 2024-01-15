@@ -7,7 +7,7 @@ The original code/repository is licensed under MIT License.
 ---------------------------------------------------------------------------------
 """
 
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Tuple, Callable, Any
 from buildpg import clauses, funcs as pg_funcs, RawDangerous as raw, logic
 from tipg.collections import Column
 from tipg.dependencies import Query
@@ -16,15 +16,7 @@ from typing_extensions import Annotated
 from pygeofilter.ast import AstType
 from starlette.requests import Request
 import json
-from typing import Any, Dict, List, Optional, Tuple
-
-from buildpg import RawDangerous as raw
-from buildpg import clauses
-from buildpg import funcs as pg_funcs
-from buildpg import logic
 from morecantile import Tile, TileMatrixSet
-from pygeofilter.ast import AstType
-
 from tipg.errors import (
     InvalidDatetimeColumnName,
     InvalidPropertyName,
@@ -32,7 +24,9 @@ from tipg.errors import (
 )
 from tipg.filter.evaluate import to_filter
 from tipg.filter.filters import bbox_to_wkt
-
+from inspect import signature
+from buildpg.funcs import any
+from buildpg.logic import Func
 
 # TODO: Add test for the functions
 
@@ -95,7 +89,7 @@ def _select_no_geo(self, properties: Optional[List[str]], addid: bool = True):
 
     if addid:
         if self.id_column:
-            id_clause = logic.V(self.id_column).as_("tipg_id")
+            id_clause = logic.V(self.id_column.name).as_("tipg_id")
         else:
             id_clause = raw(" ROW_NUMBER () OVER () AS tipg_id ")
         if nocomma:
@@ -273,3 +267,90 @@ def filter_query(
         cql_dict = filter_layer_id
 
     return cql2_json_parser(json.dumps(cql_dict))
+
+
+class Operator:
+    """Filter Operators."""
+
+    OPERATORS: Dict[str, Callable] = {
+        "is_null": lambda f, a=None: f.is_(None),
+        "is_not_null": lambda f, a=None: f.isnot(None),
+        "==": lambda f, a: f == a,
+        "=": lambda f, a: f == a,
+        "eq": lambda f, a: f == a,
+        "!=": lambda f, a: f != a,
+        "<>": lambda f, a: f != a,
+        "ne": lambda f, a: f != a,
+        ">": lambda f, a: f > a,
+        "gt": lambda f, a: f > a,
+        "<": lambda f, a: f < a,
+        "lt": lambda f, a: f < a,
+        ">=": lambda f, a: f >= a,
+        "ge": lambda f, a: f >= a,
+        "<=": lambda f, a: f <= a,
+        "le": lambda f, a: f <= a,
+        "like": lambda f, a: f.like(a),
+        "ilike": lambda f, a: f.ilike(a),
+        "not_ilike": lambda f, a: ~f.ilike(a),
+        "in": lambda f, a: f == any(a),
+        "not_in": lambda f, a: ~f == any(a),
+        "any": lambda f, a: f.any(a),
+        "not_any": lambda f, a: f.not_(f.any(a)),
+        "INTERSECTS": lambda f, a: Func(
+            "st_intersects",
+            f,
+            Func("st_transform", Func("st_geomfromtext", a), Func("st_srid", f)),
+        ),
+        "DISJOINT": lambda f, a: Func(
+            "st_disjoint", f, Func("st_transform", Func("st_geomfromtext", a), Func("st_srid", f))
+        ),
+        "CONTAINS": lambda f, a: Func(
+            "st_contains", f, Func("st_transform", Func("st_geomfromtext", a), Func("st_srid", f))
+        ),
+        "WITHIN": lambda f, a: Func(
+            "st_within", f, Func("st_transform", Func("st_geomfromtext", a), Func("st_srid", f))
+        ),
+        "TOUCHES": lambda f, a: Func(
+            "st_touches", f, Func("st_transform", Func("st_geomfromtext", a), Func("st_srid", f))
+        ),
+        "CROSSES": lambda f, a: Func(
+            "st_crosses",
+            f,
+            Func("st_transform", Func("st_geomfromtext", a), Func("st_srid", f)),
+        ),
+        "OVERLAPS": lambda f, a: Func(
+            "st_overlaps",
+            f,
+            Func("st_transform", Func("st_geomfromtext", a), Func("st_srid", f)),
+        ),
+        "EQUALS": lambda f, a: Func(
+            "st_equals",
+            f,
+            Func("st_transform", Func("st_geomfromtext", a), Func("st_srid", f)),
+        ),
+        "RELATE": lambda f, a, pattern: Func(
+            "st_relate", f, Func("st_transform", Func("st_geomfromtext", a), Func("st_srid", f)), pattern
+        ),
+        "DWITHIN": lambda f, a, distance: Func(
+            "st_dwithin", f, Func("st_transform", Func("st_geomfromtext", a), Func("st_srid", f)), distance
+        ),
+        "BEYOND": lambda f, a, distance: ~Func(
+            "st_dwithin", f, Func("st_transform", Func("st_geomfromtext", a), Func("st_srid", f)), distance
+        ),
+        "+": lambda f, a: f + a,
+        "-": lambda f, a: f - a,
+        "*": lambda f, a: f * a,
+        "/": lambda f, a: f / a,
+    }
+
+    def __init__(self, operator: str = None):
+        """Init."""
+        if not operator:
+            operator = "=="
+
+        if operator not in self.OPERATORS:
+            raise Exception("Operator `{}` not valid.".format(operator))
+
+        self.operator = operator
+        self.function = self.OPERATORS[operator]
+        self.arity = len(signature(self.function).parameters)
