@@ -108,6 +108,7 @@ class LayerCatalog:
                 schema="user_data",
                 id_column=id_col,
                 geometry_column=geom_col,
+                table_columns=columns,
                 properties=columns,
             )
             # Append collection to collection object
