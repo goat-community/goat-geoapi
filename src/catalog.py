@@ -73,9 +73,11 @@ class LayerCatalog:
 
             # Loop through attributes and create column objects
             for k in obj["attribute_mapping"]:
+                # Make data_type double precision if float as the Column does not know float as term (only float8).
+                data_type = k.split("_")[0] if k.split("_")[0] != "float" else "double precision"
                 column = Column(
                     name=obj["attribute_mapping"][k],
-                    type=k.split("_")[0],
+                    type=data_type,
                     description=k,
                 )
                 columns.append(column)
