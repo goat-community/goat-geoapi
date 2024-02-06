@@ -12,7 +12,16 @@ from contextlib import asynccontextmanager
 from tipg import __version__ as tipg_version
 from tipg.collections import Collection
 from tipg import dependencies
-from src.exts import _from, get_mvt_point, _select_no_geo, get_column, filter_query, _where, get_tile, Operator as OperatorPatch
+from src.exts import (
+    _from,
+    get_mvt_point,
+    _select_no_geo,
+    get_column,
+    filter_query,
+    _where,
+    get_tile,
+    Operator as OperatorPatch,
+)
 
 # Monkey patch filter query here because it needs to be patched before used by import down
 dependencies.filter_query = filter_query
@@ -50,7 +59,6 @@ Collection._where = _where
 Collection._select_no_geo = _select_no_geo
 Collection.get_column = get_column
 Collection.get_tile = get_tile
-
 
 
 @asynccontextmanager
@@ -107,25 +115,12 @@ ogc_api = Endpoints(
     title=settings.name,
     with_tiles_viewer=settings.add_tiles_viewer,
 )
+# Remove the list all collections endpoint
+ogc_api.router.routes = ogc_api.router.routes[1:]
 app.include_router(ogc_api.router)
-
-# # Patch openapi schema
-# def custom_openapi():
-#     openapi_schema = get_openapi(
-#         title="GOAT GeoAPI",
-#         version="3.1.0",
-#         description="GOAT GeoAPI",
-#         routes=app.routes,
-#     )
-
-#     # Delete GeometryCollection
-#     del openapi_schema["components"]["schemas"]["GeometryCollection"]
-#     app.openapi_schema = openapi_schema
-#     return app.openapi_schema
-
-# app.openapi = custom_openapi
 app.add_middleware(CacheControlMiddleware, cachecontrol=settings.cachecontrol)
 app.add_middleware(CompressionMiddleware)
+
 
 @app.get(
     "/healthz",
