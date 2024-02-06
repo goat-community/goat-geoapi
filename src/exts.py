@@ -9,13 +9,14 @@ The original code/repository is licensed under MIT License.
 
 from typing import Dict, Optional, List, Tuple, Callable, Any
 from buildpg import clauses, funcs as pg_funcs, RawDangerous as raw, logic
-from tipg.collections import Column
+from tipg.collections import Column, geojson_schema, debug_query
 from tipg.dependencies import Query
 from pygeofilter.parsers.cql2_json import parse as cql2_json_parser
 from typing_extensions import Annotated
 from pygeofilter.ast import AstType
 from starlette.requests import Request
 import json
+from buildpg import asyncpg
 from morecantile import Tile, TileMatrixSet
 from tipg.errors import (
     InvalidDatetimeColumnName,
@@ -27,6 +28,12 @@ from tipg.filter.filters import bbox_to_wkt
 from inspect import signature
 from buildpg.funcs import any
 from buildpg.logic import Func
+from buildpg import logic, render
+from tipg.settings import MVTSettings
+from tipg.errors import (
+    InvalidGeometryColumnName,
+    InvalidLimit,
+)
 
 # TODO: Add test for the functions
 
@@ -48,6 +55,9 @@ def _from(self, function_parameters: Optional[Dict[str, str]]):
                 )
         return clauses.From(logic.Func(self.id, *params))
     return clauses.From(self.dbschema + "." + self.table)
+
+
+mvt_settings = MVTSettings()
 
 
 def real_columns(properties: Optional[List[str]]) -> List[str]:
@@ -269,6 +279,260 @@ def filter_query(
     return cql2_json_parser(json.dumps(cql_dict))
 
 
+def get_mvt_point(
+    self,
+    function_parameters: Optional[Dict[str, str]],
+    ids: Optional[List[str]] = None,
+    datetime: Optional[List[str]] = None,
+    bbox: Optional[List[float]] = None,
+    properties: Optional[List[Tuple[str, Any]]] = None,
+    cql: Optional[AstType] = None,
+    geom: Optional[str] = None,
+    dt: Optional[str] = None,
+    tile: Optional[Tile] = None,
+    tms: Optional[TileMatrixSet] = None,
+    geometry_column: Optional[str] = None,
+    limit: Optional[int] = None,
+):
+    """Construct a FROM statement for the table using a clustering logic build using h3."""
+    select_clause = self._select_mvt(
+        properties=properties,
+        geometry_column=geometry_column,
+        tms=tms,
+        tile=tile,
+    )
+    from_clause = clauses.From(self.dbschema + "." + self.table)
+
+    where_clause = _where(
+        self,
+        ids=ids,
+        datetime=datetime,
+        bbox=bbox,
+        properties=properties,
+        cql=cql,
+        geom=geom,
+        dt=dt,
+        tile=tile,
+        tms=tms,
+    )
+    limit_clause = clauses.Limit(limit)
+
+    # Build the custom column selection query
+    select_unique_values = ""
+    for column in self.table_columns:
+        if column.name not in ["geom", "id", "layer_id"]:
+            select_unique_values += (
+                f"(ARRAY_AGG({column.description}))[1] AS {column.description}, "
+            )
+    select_unique_values = select_unique_values[:-2]
+
+    # Get the h3 resolution based on the zoom level
+    mapping_zoom_h3_resolution = {
+        11: 8,
+        10: 8,
+        9: 7,
+        8: 7,
+        7: 6,
+        6: 6,
+        5: 5,
+        4: 5,
+        3: 4,
+        2: 4,
+        1: 3,
+        0: 3,
+    }
+    h3_resolution = mapping_zoom_h3_resolution[tile.z]
+
+    q, p = render(
+        f"""
+        WITH clustered_points AS (
+            SELECT (ARRAY_AGG(layer_id))[1] AS layer_id, {select_unique_values}, (ARRAY_AGG(id))[1] AS id, (ARRAY_AGG(geom))[1] AS geom
+            :from_clause
+            :where_clause
+            AND cluster_keep = TRUE
+            AND ST_Intersects(geom, ST_Transform(ST_TileEnvelope({tile.z}, {tile.x}, {tile.y}), 4326))
+            GROUP BY h3_cell_to_parent(h3_group, {h3_resolution})
+        ),
+        selected AS (
+            :select_clause
+            FROM clustered_points
+            :limit_clause
+        )
+        SELECT ST_AsMVT(t.*, :layer_name) FROM selected t
+        """,
+        from_clause=from_clause,
+        where_clause=where_clause,
+        select_clause=select_clause,
+        limit_clause=limit_clause,
+        layer_name=self.table if mvt_settings.set_mvt_layername is True else "default",
+    )
+
+    return q, p
+
+
+async def get_tile(
+    self,
+    *,
+    pool: asyncpg.BuildPgPool,
+    tms: TileMatrixSet,
+    tile: Tile,
+    ids_filter: Optional[List[str]] = None,
+    bbox_filter: Optional[List[float]] = None,
+    datetime_filter: Optional[List[str]] = None,
+    properties_filter: Optional[List[Tuple[str, str]]] = None,
+    function_parameters: Optional[Dict[str, str]] = None,
+    cql_filter: Optional[AstType] = None,
+    sortby: Optional[str] = None,
+    properties: Optional[List[str]] = None,
+    geom: Optional[str] = None,
+    dt: Optional[str] = None,
+    limit: Optional[int] = None,
+):
+    """Build query to get Vector Tile."""
+
+    # TODO: Define this in the .env. For now changes where not taken effect from .env. Fix this.
+    mvt_settings.max_features_per_tile = 15000
+    min_zoom_clustering = 11
+    min_feature_cnt_clustering = 50000
+
+    limit = limit or mvt_settings.max_features_per_tile
+    geometry_column = self.get_geometry_column(geom)
+    if not geometry_column:
+        raise InvalidGeometryColumnName(f"Invalid Geometry Column Name {geom}")
+
+    if limit > mvt_settings.max_features_per_tile:
+        raise InvalidLimit(
+            f"Limit can not be set higher than the `tipg_max_features_per_tile` setting of {mvt_settings.max_features_per_tile}"
+        )
+
+    # Build sql query to count the number of points in the tile
+    select_limit = self._select
+    from_limit = self._from(function_parameters)
+    where_limit = self._where(
+        ids=ids_filter,
+        datetime=datetime_filter,
+        bbox=bbox_filter,
+        properties=properties_filter,
+        cql=cql_filter,
+        geom=geom,
+        dt=dt,
+    )
+
+    # If the layer is a point layer and the zoom level is less than 11, use clustering
+    if geometry_column.geometry_type == "point" and tile.z < min_zoom_clustering:
+        # Check if column h3_group and cluster_keep exists
+        q, p = render(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = :schema AND table_name = :table
+            AND column_name IN ('cluster_keep', 'h3_group')
+            """,
+            schema=self.dbschema,
+            table=self.table,
+        )
+        debug_query(q, *p)
+        async with pool.acquire() as conn:
+            columns = await conn.fetch(q, *p)
+
+        if len(columns) == 2:
+            # Check the total feature count of the layer
+            q, p = render(
+                """WITH features_to_count AS (
+                    SELECT *
+                    :from_limit
+                    :where_limit
+                    :limit
+                )
+                SELECT COUNT(*) FROM features_to_count
+                """,
+                select_limit=select_limit,
+                from_limit=from_limit,
+                where_limit=where_limit,
+                limit=clauses.Limit(min_feature_cnt_clustering),
+            )
+            debug_query(q, *p)
+            async with pool.acquire() as conn:
+                count = await conn.fetchval(q, *p)
+
+            if count >= limit:
+                q, p = self.get_mvt_point(
+                    function_parameters=function_parameters,
+                    ids=ids_filter,
+                    datetime=datetime_filter,
+                    bbox=bbox_filter,
+                    properties=properties,
+                    cql=cql_filter,
+                    geom=geom,
+                    dt=dt,
+                    tile=tile,
+                    tms=tms,
+                    geometry_column=geometry_column,
+                    limit=limit,
+                )
+                debug_query(q, *p)
+
+                async with pool.acquire() as conn:
+                    mvt = await conn.fetchval(q, *p)
+                    return mvt
+
+    c = clauses.Clauses(
+        self._select_mvt(
+            properties=properties,
+            geometry_column=geometry_column,
+            tms=tms,
+            tile=tile,
+        ),
+        self._from(function_parameters),
+        self._where(
+            ids=ids_filter,
+            datetime=datetime_filter,
+            bbox=bbox_filter,
+            properties=properties_filter,
+            cql=cql_filter,
+            geom=geom,
+            dt=dt,
+            tms=tms,
+            tile=tile,
+        ),
+        clauses.Limit(limit),
+    )
+
+    q, p = render(
+        """
+        WITH
+        t AS (:c)
+        SELECT ST_AsMVT(t.*, :l) FROM t
+        """,
+        c=c,
+        l=self.table if mvt_settings.set_mvt_layername is True else "default",
+    )
+    debug_query(q, *p)
+
+    async with pool.acquire() as conn:
+        return await conn.fetchval(q, *p)
+
+
+@property
+def queryables(self) -> Dict:
+    """Return the queryables."""
+    if self.geometry_columns:
+        geoms = {
+            col.name: {"$ref": geojson_schema.get(col.geometry_type.upper(), "")}
+            for col in self.geometry_columns
+        }
+    else:
+        geoms = {}
+
+    props = {
+        col.name: {"name": col.name, "type": col.json_type}
+        for col in self.properties
+        if col.name not in geoms
+    }
+
+    return {**geoms, **props}
+
+
 class Operator:
     """Filter Operators."""
 
@@ -302,16 +566,24 @@ class Operator:
             Func("st_transform", Func("st_geomfromtext", a), Func("st_srid", f)),
         ),
         "DISJOINT": lambda f, a: Func(
-            "st_disjoint", f, Func("st_transform", Func("st_geomfromtext", a), Func("st_srid", f))
+            "st_disjoint",
+            f,
+            Func("st_transform", Func("st_geomfromtext", a), Func("st_srid", f)),
         ),
         "CONTAINS": lambda f, a: Func(
-            "st_contains", f, Func("st_transform", Func("st_geomfromtext", a), Func("st_srid", f))
+            "st_contains",
+            f,
+            Func("st_transform", Func("st_geomfromtext", a), Func("st_srid", f)),
         ),
         "WITHIN": lambda f, a: Func(
-            "st_within", f, Func("st_transform", Func("st_geomfromtext", a), Func("st_srid", f))
+            "st_within",
+            f,
+            Func("st_transform", Func("st_geomfromtext", a), Func("st_srid", f)),
         ),
         "TOUCHES": lambda f, a: Func(
-            "st_touches", f, Func("st_transform", Func("st_geomfromtext", a), Func("st_srid", f))
+            "st_touches",
+            f,
+            Func("st_transform", Func("st_geomfromtext", a), Func("st_srid", f)),
         ),
         "CROSSES": lambda f, a: Func(
             "st_crosses",
@@ -329,13 +601,22 @@ class Operator:
             Func("st_transform", Func("st_geomfromtext", a), Func("st_srid", f)),
         ),
         "RELATE": lambda f, a, pattern: Func(
-            "st_relate", f, Func("st_transform", Func("st_geomfromtext", a), Func("st_srid", f)), pattern
+            "st_relate",
+            f,
+            Func("st_transform", Func("st_geomfromtext", a), Func("st_srid", f)),
+            pattern,
         ),
         "DWITHIN": lambda f, a, distance: Func(
-            "st_dwithin", f, Func("st_transform", Func("st_geomfromtext", a), Func("st_srid", f)), distance
+            "st_dwithin",
+            f,
+            Func("st_transform", Func("st_geomfromtext", a), Func("st_srid", f)),
+            distance,
         ),
         "BEYOND": lambda f, a, distance: ~Func(
-            "st_dwithin", f, Func("st_transform", Func("st_geomfromtext", a), Func("st_srid", f)), distance
+            "st_dwithin",
+            f,
+            Func("st_transform", Func("st_geomfromtext", a), Func("st_srid", f)),
+            distance,
         ),
         "+": lambda f, a: f + a,
         "-": lambda f, a: f - a,
