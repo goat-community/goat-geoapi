@@ -7,7 +7,6 @@ The original code/repository is licensed under MIT License.
 ---------------------------------------------------------------------------------
 """
 
-
 from contextlib import asynccontextmanager
 from tipg import __version__ as tipg_version
 from tipg.collections import Collection
@@ -26,22 +25,21 @@ from src.exts import (
 # Monkey patch filter query here because it needs to be patched before used by import down
 dependencies.filter_query = filter_query
 
-from tipg.database import close_db_connection, connect_to_db
-from tipg.factory import Endpoints
-from tipg.middleware import CacheControlMiddleware
-from tipg.settings import (
+from tipg.database import close_db_connection, connect_to_db  # noqa: E402
+from tipg.factory import Endpoints  # noqa: E402
+from tipg.middleware import CacheControlMiddleware  # noqa: E402
+from tipg.settings import (  # noqa: E402
     APISettings,
     CustomSQLSettings,
     DatabaseSettings,
     PostgresSettings,
     MVTSettings,
 )
-from tipg.filter.filters import Operator
-from fastapi import FastAPI
-from starlette.middleware.cors import CORSMiddleware
-from starlette_cramjam.middleware import CompressionMiddleware
-from src.catalog import LayerCatalog
-from fastapi.openapi.utils import get_openapi
+from tipg.filter.filters import Operator  # noqa: E402
+from fastapi import FastAPI  # noqa: E402
+from starlette.middleware.cors import CORSMiddleware  # noqa: E402
+from starlette_cramjam.middleware import CompressionMiddleware  # noqa: E402
+from src.catalog import LayerCatalog  # noqa: E402
 
 mvt_settings = MVTSettings()
 mvt_settings.max_features_per_tile = 20000
@@ -71,23 +69,11 @@ async def lifespan(app: FastAPI):
         schemas=db_settings.schemas,
         user_sql_files=custom_sql_settings.sql_files,
     )
-    # Create Initial Layer Catalog
-    layer_catalog = LayerCatalog()
-    await layer_catalog.connect()
-    app.state.collection_catalog = await layer_catalog.init()
-    await layer_catalog.disconnect()
-
-    # # Listen to the layer_changes channel
-    layer_catalog_listen = LayerCatalog(app.state.collection_catalog)
-    await layer_catalog_listen.connect()
-    await layer_catalog_listen.listen()
-
+    # Init Layer Catalog
+    layer_catalog = LayerCatalog(app=app)
+    await layer_catalog.start()
     yield
-
-    # # Unlisten to layer_changes channel and close the Connection Pool
-    await layer_catalog_listen.unlisten()
-    await layer_catalog_listen.disconnect()
-
+    await layer_catalog.stop()
     await close_db_connection(app)
 
 

@@ -1,45 +1,90 @@
-import asyncpg
+import asyncio
+import json
 from typing import List
 from uuid import UUID
+
+import asyncpg
+from fastapi import FastAPI
+from tipg.collections import Catalog, Collection, Column
 from tipg.settings import PostgresSettings
-from tipg.collections import Column, Collection, Catalog
-import json
+
+
+
 
 
 # TODO: Check if we can reuse the connection of TIPG. At the moment it was considered easier to just open a new connection.
 class LayerCatalog:
-    def __init__(self, layer_catalog_obj=None):
-        self.pool = None
-        self.listener_conn = None
-        self.layer_catalog_obj = layer_catalog_obj
+    def __init__(self, app: FastAPI = None):
+        self.listener_task = None
+        self.app = app
 
-    async def connect(self):
-        """Connect to the database."""
-        self.pool = await asyncpg.create_pool(str(PostgresSettings().database_url))
+    @staticmethod
+    async def asyncpg_listen(
+        channel, notification_handler, reconnect_handler=None,
+        *, conn_check_interval=60, conn_check_timeout=5, reconnect_delay=0):
 
-    async def disconnect(self):
-        """Disconnect from the database."""
-        await self.pool.close()
+        """Listen to a PostgreSQL channel using asyncpg. """
+        while True:
+            try:
+                conn = await asyncpg.connect(str(PostgresSettings().database_url))
+                await conn.add_listener(channel, notification_handler)
 
-    async def listen(self):
+                if reconnect_handler is not None:
+                    await reconnect_handler(conn)
+
+                while True:
+                    await asyncio.sleep(conn_check_interval)
+                    await conn.execute('select 1', timeout=conn_check_timeout)
+
+            except asyncio.CancelledError:
+                print("Listener task was cancelled")
+                if conn:
+                    print("Closing connection")
+                    await conn.close()
+                raise
+
+            except:  # noqa: E722
+                # Probably lost connection
+                pass
+
+            if reconnect_delay > 0:
+                await asyncio.sleep(reconnect_delay)
+
+    async def start(self):
         """Listen to the layer_changes channel."""
-        self.listener_conn = await asyncpg.connect(str(PostgresSettings().database_url))
-        await self.listener_conn.add_listener("layer_changes", self.on_layer_changes)
+        print("Starting catalog listener.")
+        self.listener_task = asyncio.create_task(
+            self.asyncpg_listen("layer_changes", self.listener_handler, self.listener_reconnect_handler)
+        )
 
-    async def unlisten(self):
+    async def listener_handler(self, conn, pid, channel, payload):
+        """Handle layer changes"""
+        operation, layer_id = payload.split(":", 1)
+        print(f"Received notification on channel {channel}: {operation} on layer {layer_id}")
+        if operation == "UPDATE":
+            await self.update_insert(layer_id, conn)
+        elif operation == "DELETE":
+            await self.delete(layer_id)
+        elif operation == "INSERT":
+            await self.update_insert(layer_id, conn)
+
+    async def listener_reconnect_handler(self, conn):
+        """Reconnect handler"""
+        print("Reading catalog data")
+        self.app.state.collection_catalog = await self.read_catalog(conn)
+
+    async def stop(self):
         """Unlisten to the layer_changes channel."""
-        await self.listener_conn.remove_listener("layer_changes", self.on_layer_changes)
-        await self.listener_conn.close()
+        self.listener_task.cancel()
 
-    async def get(self, layer_id: UUID = None) -> List[dict]:
+    async def get(self, layer_id: UUID = None, conn = None) -> List[dict]:
         """Get all layers when passing now layer_id or get the layer with the given layer_id."""
 
         # Build and condition
         condition_layer_id = f"AND id = '{layer_id}'" if layer_id else ""
 
         # Get layers
-        async with self.pool.acquire() as conn:
-            sql = f"""
+        sql = f"""
                 WITH with_bounds AS (
                     SELECT
                         l.*,
@@ -57,8 +102,8 @@ class LayerCatalog:
                     ), 'attribute_mapping', attribute_mapping, 'geom_type', feature_layer_geometry_type)
                 FROM with_bounds
             """
-            rows = await conn.fetch(sql)
-            return [json.loads(dict(row)["jsonb_build_object"]) for row in rows]
+        rows = await conn.fetch(sql)
+        return [json.loads(dict(row)["jsonb_build_object"]) for row in rows]
 
     def build_collection(self, layer_objs: List[dict]):
         """Build a collection using collection and column types from tipg from a layer."""
@@ -118,38 +163,26 @@ class LayerCatalog:
 
         return collections
 
-    async def on_layer_changes(self, connection, pid, channel, payload):
-        """Handle layer changes"""
-
-        operation, layer_id = payload.split(":", 1)
-        if operation == "UPDATE":
-            await self.update_insert(layer_id)
-        elif operation == "DELETE":
-            await self.delete(layer_id)
-        elif operation == "INSERT":
-            await self.update_insert(layer_id)
-
     async def delete(self, layer_id):
         """Remove the corresponding collection for the given ID"""
         collection_key = (
             "user_data." + layer_id
         )  # Assuming the ID corresponds directly to the collection key.
-        if collection_key in self.layer_catalog_obj["collections"]:
-            del self.layer_catalog_obj["collections"][collection_key]
+        if collection_key in self.app.state.collection_catalog["collections"]:
+            del self.app.state.collection_catalog["collections"][collection_key]
 
-    async def update_insert(self, layer_id):
+    async def update_insert(self, layer_id, conn):
         """Update or insert a collection into the catalog"""
-        changed_layer = await self.get(layer_id)
+        changed_layer = await self.get(layer_id, conn)
         if changed_layer:
             collections = self.build_collection(changed_layer)
             # Insert the new collection into the catalog
-            self.layer_catalog_obj["collections"].update(collections)
+            self.app.state.collection_catalog["collections"].update(collections)
 
-    async def init(self):
+    async def read_catalog(self, conn):
         """Initialize the catalog. It will load all feature layers from the database and build a collection object."""
-        layer_objs = await self.get()
+        layer_objs = await self.get(conn=conn)
         collections = self.build_collection(layer_objs)
         return Catalog(collections=collections)
 
 
-layer_catalog = LayerCatalog()
