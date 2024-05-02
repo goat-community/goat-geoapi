@@ -37,7 +37,6 @@ from tipg.errors import (
 
 # TODO: Add test for the functions
 
-
 # These are the function that need to be patched.
 def _from(self, function_parameters: Optional[Dict[str, str]]):
     """Construct a FROM statement for the table."""
@@ -408,15 +407,6 @@ async def get_tile(
     # Build sql query to count the number of points in the tile
     select_limit = self._select
     from_limit = self._from(function_parameters)
-    where_limit = self._where(
-        ids=ids_filter,
-        datetime=datetime_filter,
-        bbox=bbox_filter,
-        properties=properties_filter,
-        cql=cql_filter,
-        geom=geom,
-        dt=dt,
-    )
 
     # If the layer is a point layer and the zoom level is less than 11, use clustering
     if geometry_column.geometry_type == "point" and tile.z < min_zoom_clustering:
@@ -436,19 +426,27 @@ async def get_tile(
             columns = await conn.fetch(q, *p)
 
         if len(columns) == 2:
-            # Check the total feature count of the layer
+            # Check the total feature count of the layer and therefore adapt the where query to only layer_id
+            filter_by_layer_id = {
+                "op": "=",
+                "args": [{"property": "layer_id"}, format_to_uuid(self.id.split(".")[1])],
+            }
+            filter_by_layer_id = cql2_json_parser(json.dumps(filter_by_layer_id))
+            filter_by_layer_id = to_filter(filter_by_layer_id, [p.description for p in self.properties])
+            where_cnt = clauses.Where(filter_by_layer_id)
             q, p = render(
-                """WITH features_to_count AS (
-                    SELECT *
+                f"""WITH features_to_count AS (
+                    SELECT id
                     :from_limit
                     :where_limit
+                    AND ST_Intersects(geom, ST_Transform(ST_TileEnvelope({tile.z}, {tile.x}, {tile.y}), 4326))
                     :limit
                 )
                 SELECT COUNT(*) FROM features_to_count
                 """,
                 select_limit=select_limit,
                 from_limit=from_limit,
-                where_limit=where_limit,
+                where_limit=where_cnt,
                 limit=clauses.Limit(min_feature_cnt_clustering),
             )
             debug_query(q, *p)
@@ -635,3 +633,49 @@ class Operator:
         self.operator = operator
         self.function = self.OPERATORS[operator]
         self.arity = len(signature(self.function).parameters)
+
+
+
+"""
+
+EXPLAIN ANALYZE 
+WITH features_to_count AS (
+    SELECT id
+    FROM user_data.point_b6ddb594bfed4a8788b214af45378d75
+    WHERE TRUE
+    AND st_intersects(geom, st_transform(st_geomfromtext('SRID=4326;POLYGON ((11.834988894945155 50.572467659521266, 13.139598985118283 50.572467659521266, 13.139598985118283 50.79468132959428, 11.834988894945155 50.79468132959428, 11.834988894945155 50.572467659521266))'), st_srid(geom))) 
+    AND layer_id = 'b7a5ffc9-4b2b-4116-a03f-181312e86ff5'
+    LIMIT 50000
+)
+SELECT COUNT(*) 
+FROM features_to_count
+
+EXPLAIN ANALYZE 
+WITH geom_filter AS 
+(
+	WITH 
+	  -- Define your large polygon
+	  large_polygon AS (
+	    SELECT st_transform(st_geomfromtext('SRID=4326;POLYGON ((11.834988894945155 50.572467659521266, 13.139598985118283 50.572467659521266, 13.139598985118283 50.79468132959428, 11.834988894945155 50.79468132959428, 11.834988894945155 50.572467659521266))'), 4326) AS geom
+	  ),
+	  -- Create a grid of smaller polygons (1x1 in this example)
+	  grid AS (
+	    SELECT x.* FROM large_polygon, LATERAL ST_SquareGrid(1, geom) x
+	  )
+	-- Find the intersection of the large polygon with the grid
+	SELECT ST_Intersection(large_polygon.geom, grid.geom) AS filter
+	FROM large_polygon, grid
+	WHERE ST_Intersects(large_polygon.geom, grid.geom)
+),
+features_to_count AS (
+    SELECT id
+    FROM user_data.point_b6ddb594bfed4a8788b214af45378d75, geom_filter f
+    WHERE ST_Intersects(f.FILTER, geom)
+    AND layer_id = 'b7a5ffc9-4b2b-4116-a03f-181312e86ff5'
+    LIMIT 50000
+)
+SELECT COUNT(*) 
+FROM features_to_count
+
+
+"""
