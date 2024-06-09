@@ -89,7 +89,7 @@ def _select_no_geo(self, properties: Optional[List[str]], addid: bool = True):
     if columns:
         select_query = "SELECT "
         for i, column in enumerate(columns):
-            select_query = select_query + old_columns[i] + " AS " + column + ", "
+            select_query = select_query + old_columns[i] + ' AS "' + column + '", '
         select_query = select_query[:-2]
         sel = logic.as_sql_block(raw(select_query))
     else:
@@ -633,49 +633,3 @@ class Operator:
         self.operator = operator
         self.function = self.OPERATORS[operator]
         self.arity = len(signature(self.function).parameters)
-
-
-
-"""
-
-EXPLAIN ANALYZE 
-WITH features_to_count AS (
-    SELECT id
-    FROM user_data.point_b6ddb594bfed4a8788b214af45378d75
-    WHERE TRUE
-    AND st_intersects(geom, st_transform(st_geomfromtext('SRID=4326;POLYGON ((11.834988894945155 50.572467659521266, 13.139598985118283 50.572467659521266, 13.139598985118283 50.79468132959428, 11.834988894945155 50.79468132959428, 11.834988894945155 50.572467659521266))'), st_srid(geom))) 
-    AND layer_id = 'b7a5ffc9-4b2b-4116-a03f-181312e86ff5'
-    LIMIT 50000
-)
-SELECT COUNT(*) 
-FROM features_to_count
-
-EXPLAIN ANALYZE 
-WITH geom_filter AS 
-(
-	WITH 
-	  -- Define your large polygon
-	  large_polygon AS (
-	    SELECT st_transform(st_geomfromtext('SRID=4326;POLYGON ((11.834988894945155 50.572467659521266, 13.139598985118283 50.572467659521266, 13.139598985118283 50.79468132959428, 11.834988894945155 50.79468132959428, 11.834988894945155 50.572467659521266))'), 4326) AS geom
-	  ),
-	  -- Create a grid of smaller polygons (1x1 in this example)
-	  grid AS (
-	    SELECT x.* FROM large_polygon, LATERAL ST_SquareGrid(1, geom) x
-	  )
-	-- Find the intersection of the large polygon with the grid
-	SELECT ST_Intersection(large_polygon.geom, grid.geom) AS filter
-	FROM large_polygon, grid
-	WHERE ST_Intersects(large_polygon.geom, grid.geom)
-),
-features_to_count AS (
-    SELECT id
-    FROM user_data.point_b6ddb594bfed4a8788b214af45378d75, geom_filter f
-    WHERE ST_Intersects(f.FILTER, geom)
-    AND layer_id = 'b7a5ffc9-4b2b-4116-a03f-181312e86ff5'
-    LIMIT 50000
-)
-SELECT COUNT(*) 
-FROM features_to_count
-
-
-"""
