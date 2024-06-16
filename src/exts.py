@@ -89,7 +89,11 @@ def _select_no_geo(self, properties: Optional[List[str]], addid: bool = True):
     if columns:
         select_query = "SELECT "
         for i, column in enumerate(columns):
-            select_query = select_query + old_columns[i] + ' AS "' + column + '", '
+            # Check if the column is a jsonb column and cast it to text
+            if "jsonb" in old_columns[i]:
+                select_query = select_query + old_columns[i] + "::text" + ' AS "' + column + '", '
+            else:
+                select_query = select_query + old_columns[i] + ' AS "' + column + '", '
         select_query = select_query[:-2]
         sel = logic.as_sql_block(raw(select_query))
     else:
