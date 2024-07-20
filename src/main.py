@@ -19,6 +19,7 @@ from src.exts import (
     filter_query,
     _where,
     get_tile,
+    single_select_h3,
     Operator as OperatorPatch,
 )
 
@@ -53,6 +54,7 @@ custom_sql_settings = CustomSQLSettings()
 Operator.OPERATORS = OperatorPatch.OPERATORS
 Collection._from = _from
 Collection.get_mvt_point = get_mvt_point
+Collection.single_select_h3 = single_select_h3
 Collection._where = _where
 Collection._select_no_geo = _select_no_geo
 Collection.get_column = get_column

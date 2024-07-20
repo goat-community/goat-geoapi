@@ -35,7 +35,17 @@ from tipg.errors import (
     InvalidLimit,
 )
 
+
+from buildpg import V, S, render
+
+
+def show(component):
+    sql, params = render(":c", c=component)
+    print(f'sql="{sql}" params={params}')
+
+
 # TODO: Add test for the functions
+
 
 # These are the function that need to be patched.
 def _from(self, function_parameters: Optional[Dict[str, str]]):
@@ -91,7 +101,9 @@ def _select_no_geo(self, properties: Optional[List[str]], addid: bool = True):
         for i, column in enumerate(columns):
             # Check if the column is a jsonb column and cast it to text
             if "jsonb" in old_columns[i]:
-                select_query = select_query + old_columns[i] + "::text" + ' AS "' + column + '", '
+                select_query = (
+                    select_query + old_columns[i] + "::text" + ' AS "' + column + '", '
+                )
             else:
                 select_query = select_query + old_columns[i] + ' AS "' + column + '", '
         select_query = select_query[:-2]
@@ -124,6 +136,7 @@ def _where(  # noqa: C901
     dt: Optional[str] = None,
     tile: Optional[Tile] = None,
     tms: Optional[TileMatrixSet] = None,
+    h3_3: Optional[int] = None,
 ):
     """Construct WHERE query."""
     wheres = [logic.S(True)]
@@ -221,7 +234,8 @@ def _where(  # noqa: C901
                 logic.V(geometry_column.name),
             )
         )
-
+    if h3_3:
+        wheres.append(logic.V("h3_3") == logic.S(h3_3))
     return clauses.Where(pg_funcs.AND(*wheres))
 
 
@@ -280,6 +294,51 @@ def filter_query(
         cql_dict = filter_layer_id
 
     return cql2_json_parser(json.dumps(cql_dict))
+
+
+def single_select_h3(
+    self,
+    properties: Optional[List[str]] = None,
+    geometry_column: Optional[str] = None,
+    ids: Optional[List[str]] = None,
+    datetime: Optional[List[str]] = None,
+    bbox: Optional[List[float]] = None,
+    cql: Optional[AstType] = None,
+    geom: Optional[str] = None,
+    dt: Optional[str] = None,
+    tile: Optional[Tile] = None,
+    tms: Optional[TileMatrixSet] = None,
+    limit: Optional[int] = None,
+    h3_3: Optional[int] = None,
+):
+    select_clause = self._select_mvt(
+        properties=properties,
+        geometry_column=geometry_column,
+        tms=tms,
+        tile=tile,
+    )
+    from_clause = clauses.From(self.dbschema + "." + self.table)
+
+    where_clause = _where(
+        self,
+        ids=ids,
+        datetime=datetime,
+        bbox=bbox,
+        properties=properties,
+        cql=cql,
+        geom=geom,
+        dt=dt,
+        tile=tile,
+        tms=tms,
+        h3_3=h3_3,
+    )
+    limit_clause = clauses.Limit(limit)
+    return {
+        "select_clause": select_clause,
+        "from_clause": from_clause,
+        "where_clause": where_clause,
+        "limit_clause": limit_clause,
+    }
 
 
 def get_mvt_point(
@@ -412,6 +471,14 @@ async def get_tile(
     select_limit = self._select
     from_limit = self._from(function_parameters)
 
+    # Get order by geomtry size or length depending on the geometry type
+    if geometry_column.geometry_type == "point":
+        order_by = ""
+    elif geometry_column.geometry_type == "line":
+        order_by = "ORDER BY ST_LENGTH(geom) DESC"
+    elif geometry_column.geometry_type == "polygon":
+        order_by = "ORDER BY ST_AREA(geom) DESC"
+
     # If the layer is a point layer and the zoom level is less than 11, use clustering
     if geometry_column.geometry_type == "point" and tile.z < min_zoom_clustering:
         # Check if column h3_group and cluster_keep exists
@@ -433,10 +500,15 @@ async def get_tile(
             # Check the total feature count of the layer and therefore adapt the where query to only layer_id
             filter_by_layer_id = {
                 "op": "=",
-                "args": [{"property": "layer_id"}, format_to_uuid(self.id.split(".")[1])],
+                "args": [
+                    {"property": "layer_id"},
+                    format_to_uuid(self.id.split(".")[1]),
+                ],
             }
             filter_by_layer_id = cql2_json_parser(json.dumps(filter_by_layer_id))
-            filter_by_layer_id = to_filter(filter_by_layer_id, [p.description for p in self.properties])
+            filter_by_layer_id = to_filter(
+                filter_by_layer_id, [p.description for p in self.properties]
+            )
             where_cnt = clauses.Where(filter_by_layer_id)
             q, p = render(
                 f"""WITH features_to_count AS (
@@ -453,7 +525,6 @@ async def get_tile(
                 where_limit=where_cnt,
                 limit=clauses.Limit(min_feature_cnt_clustering),
             )
-            debug_query(q, *p)
             async with pool.acquire() as conn:
                 count = await conn.fetchval(q, *p)
 
@@ -472,44 +543,108 @@ async def get_tile(
                     geometry_column=geometry_column,
                     limit=limit,
                 )
-                debug_query(q, *p)
-
                 async with pool.acquire() as conn:
-                    mvt = await conn.fetchval(q, *p)
-                    return mvt
+                    return await conn.fetchval(q, *p)
 
-    c = clauses.Clauses(
-        self._select_mvt(
-            properties=properties,
-            geometry_column=geometry_column,
-            tms=tms,
-            tile=tile,
-        ),
-        self._from(function_parameters),
-        self._where(
-            ids=ids_filter,
-            datetime=datetime_filter,
-            bbox=bbox_filter,
-            properties=properties_filter,
-            cql=cql_filter,
-            geom=geom,
-            dt=dt,
-            tms=tms,
-            tile=tile,
-        ),
-        clauses.Limit(limit),
-    )
+    # Check if distributed table to get relevant h3_3_grids
+    if self.distributed is True:
+        q, p = render(
+            f"""
+            SELECT DISTINCT h3_3
+            FROM basic.h3_3
+            WHERE ST_Intersects(geom, ST_Transform(ST_TileEnvelope({tile.z}, {tile.x}, {tile.y}), 4326))
+            """
+        )
+        debug_query(q, *p)
+        async with pool.acquire() as conn:
+            h3_3_grids = await conn.fetch(q, *p)
+            h3_3_grids = [row["h3_3"] for row in h3_3_grids]
 
-    q, p = render(
-        """
-        WITH
-        t AS (:c)
-        SELECT ST_AsMVT(t.*, :l) FROM t
-        """,
-        c=c,
-        l=self.table if mvt_settings.set_mvt_layername is True else "default",
-    )
-    debug_query(q, *p)
+        # Build query for each h3_3_grid and merge with union all
+        union_query = ""
+        query_values = {}
+        for h3_3_grid in h3_3_grids:
+            h3_3_grid_string = str(h3_3_grid)
+            query = self.single_select_h3(
+                properties=properties,
+                geometry_column=geometry_column,
+                ids=ids_filter,
+                datetime=datetime_filter,
+                bbox=bbox_filter,
+                cql=cql_filter,
+                geom=geom,
+                dt=dt,
+                tile=tile,
+                tms=tms,
+                limit=limit,
+                h3_3=h3_3_grid,
+            )
+            union_query += f"""
+                (
+                    :select_clause_{h3_3_grid_string}
+                    :from_clause_{h3_3_grid_string}
+                    :where_clause_{h3_3_grid_string}
+                    {order_by}
+                    :limit_clause_{h3_3_grid_string}
+                )
+                UNION ALL
+                """
+            query_values.update(
+                {
+                    f"select_clause_{h3_3_grid_string}": query["select_clause"],
+                    f"from_clause_{h3_3_grid_string}": query["from_clause"],
+                    f"where_clause_{h3_3_grid_string}": query["where_clause"],
+                    f"limit_clause_{h3_3_grid_string}": query["limit_clause"],
+                }
+            )
+
+        union_query = union_query[:-26]
+        q, p = render(
+            f"""
+            WITH
+            t AS (
+                {union_query}
+            )
+            SELECT ST_AsMVT(t.*, :l) FROM t
+            """,
+            **query_values,
+            l=self.table if mvt_settings.set_mvt_layername is True else "default",
+        )
+
+    else:
+        q, p = render(
+            f"""
+            WITH
+            t AS (
+                :select_clause
+                :from_clause
+                :where_clause
+                {order_by}
+                :limit_clause
+            )
+            SELECT ST_AsMVT(t.*, :l) FROM t
+            """,
+            select_clause=self._select_mvt(
+                properties=properties,
+                geometry_column=geometry_column,
+                tms=tms,
+                tile=tile,
+            ),
+            from_clause=self._from(function_parameters),
+            where_clause=self._where(
+                ids=ids_filter,
+                datetime=datetime_filter,
+                bbox=bbox_filter,
+                properties=properties_filter,
+                cql=cql_filter,
+                geom=geom,
+                dt=dt,
+                tms=tms,
+                tile=tile,
+            ),
+            limit_clause=clauses.Limit(limit),
+            l=self.table if mvt_settings.set_mvt_layername is True else "default",
+        )
 
     async with pool.acquire() as conn:
         return await conn.fetchval(q, *p)

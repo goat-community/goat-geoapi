@@ -8,9 +8,8 @@ from fastapi import FastAPI
 from tipg.collections import Catalog, Collection, Column
 from tipg.settings import PostgresSettings
 
-
-
-
+class Collection(Collection):
+    distributed: bool = False
 
 # TODO: Check if we can reuse the connection of TIPG. At the moment it was considered easier to just open a new connection.
 class LayerCatalog:
@@ -20,10 +19,15 @@ class LayerCatalog:
 
     @staticmethod
     async def asyncpg_listen(
-        channel, notification_handler, reconnect_handler=None,
-        *, conn_check_interval=60, conn_check_timeout=5, reconnect_delay=0):
-
-        """Listen to a PostgreSQL channel using asyncpg. """
+        channel,
+        notification_handler,
+        reconnect_handler=None,
+        *,
+        conn_check_interval=60,
+        conn_check_timeout=5,
+        reconnect_delay=0,
+    ):
+        """Listen to a PostgreSQL channel using asyncpg."""
         while True:
             try:
                 conn = await asyncpg.connect(str(PostgresSettings().database_url))
@@ -34,7 +38,7 @@ class LayerCatalog:
 
                 while True:
                     await asyncio.sleep(conn_check_interval)
-                    await conn.execute('select 1', timeout=conn_check_timeout)
+                    await conn.execute("select 1", timeout=conn_check_timeout)
 
             except asyncio.CancelledError:
                 print("Listener task was cancelled")
@@ -54,13 +58,17 @@ class LayerCatalog:
         """Listen to the layer_changes channel."""
         print("Starting catalog listener.")
         self.listener_task = asyncio.create_task(
-            self.asyncpg_listen("layer_changes", self.listener_handler, self.listener_reconnect_handler)
+            self.asyncpg_listen(
+                "layer_changes", self.listener_handler, self.listener_reconnect_handler
+            )
         )
 
     async def listener_handler(self, conn, pid, channel, payload):
         """Handle layer changes"""
         operation, layer_id = payload.split(":", 1)
-        print(f"Received notification on channel {channel}: {operation} on layer {layer_id}")
+        print(
+            f"Received notification on channel {channel}: {operation} on layer {layer_id}"
+        )
         if operation == "UPDATE":
             await self.update_insert(layer_id, conn)
         elif operation == "DELETE":
@@ -77,7 +85,7 @@ class LayerCatalog:
         """Unlisten to the layer_changes channel."""
         self.listener_task.cancel()
 
-    async def get(self, layer_id: UUID = None, conn = None) -> List[dict]:
+    async def get(self, layer_id: UUID = None, conn=None) -> List[dict]:
         """Get all layers when passing now layer_id or get the layer with the given layer_id."""
 
         # Build and condition
@@ -86,21 +94,40 @@ class LayerCatalog:
         # Get layers
         sql = f"""
                 WITH with_bounds AS (
-                    SELECT
-                        l.*,
-                        ST_XMin(e.e) AS xmin,
-                        ST_YMin(e.e) AS ymin,
-                        ST_XMax(e.e) AS xmax,
-                        ST_YMax(e.e) AS ymax
-                    FROM customer.layer l, LATERAL ST_Envelope(extent) e
-                    WHERE type IN ('feature', 'table')
-                    {condition_layer_id}
+                SELECT
+                    l.*,
+                    ST_XMin(e.e) AS xmin,
+                    ST_YMin(e.e) AS ymin,
+                    ST_XMax(e.e) AS xmax,
+                    ST_YMax(e.e) AS ymax,
+                    CASE WHEN feature_layer_geometry_type IS NOT NULL AND feature_layer_type = 'street_network'
+                    THEN feature_layer_type || '_' || feature_layer_geometry_type || '_' || replace(user_id::text, '-', '')
+                    WHEN feature_layer_geometry_type IS NOT NULL
+                    THEN feature_layer_geometry_type || '_' || replace(user_id::text, '-', '')
+                    ELSE replace(user_id::text, '-', '')
+                    END AS table_name
+                FROM customer.layer l, LATERAL ST_Envelope(extent) e
+                WHERE type IN ('feature', 'table')
+                {condition_layer_id}
+                ),
+                checked_distributed AS
+                (
+                    SELECT w.*, CASE WHEN table_name_distributed IS NULL THEN FALSE ELSE TRUE END AS distributed
+                    FROM with_bounds w
+                    LEFT JOIN LATERAL 
+                    (
+                        SELECT pg_dist_partition.logicalrelid::regclass AS table_name_distributed
+                        FROM pg_class
+                        LEFT JOIN pg_dist_partition
+                        ON pg_class.oid = pg_dist_partition.logicalrelid
+                        WHERE pg_class.relname = table_name
+                        AND pg_class.relnamespace = 'user_data'::regnamespace
+                    ) j ON TRUE
                 )
-                SELECT jsonb_build_object('layer_id', id, 'user_id', replace(user_id::text, '-', ''), 'id', replace(id::text, '-', ''), 'name', name, 'bounds', COALESCE(
-                        array[xmin, ymin, xmax, ymax],
-                        ARRAY[-180, -90, 180, 90]
-                    ), 'attribute_mapping', attribute_mapping, 'geom_type', feature_layer_geometry_type)
-                FROM with_bounds
+                SELECT jsonb_build_object('layer_id', id, 'user_id', replace(user_id::text, '-', ''), 'id', replace(id::text, '-', ''), 'name', name, 
+                        'bounds', COALESCE(array[xmin, ymin, xmax, ymax], ARRAY[-180, -90, 180, 90]),
+                        'attribute_mapping', attribute_mapping, 'feature_layer_type', feature_layer_type, 'geom_type', feature_layer_geometry_type, 'table_name', table_name, 'distributed', distributed)
+                FROM checked_distributed;
             """
         rows = await conn.fetch(sql)
         return [json.loads(dict(row)["jsonb_build_object"]) for row in rows]
@@ -119,7 +146,11 @@ class LayerCatalog:
             # Loop through attributes and create column objects
             for k in obj["attribute_mapping"]:
                 # Make data_type double precision if float as the Column does not know float as term (only float8).
-                data_type = k.split("_")[0] if k.split("_")[0] != "float" else "double precision"
+                data_type = (
+                    k.split("_")[0]
+                    if k.split("_")[0] != "float"
+                    else "double precision"
+                )
                 column = Column(
                     name=obj["attribute_mapping"][k],
                     type=data_type,
@@ -138,10 +169,8 @@ class LayerCatalog:
                     bounds=obj["bounds"],
                 )
                 columns.append(geom_col)
-                table = obj["geom_type"] + "_" + obj["user_id"]
             else:
                 geom_col = None
-                table = "no_geometry" + "_" + obj["user_id"]
 
             # Append ID column
             id_col = Column(name="id", description="id", type="integer")
@@ -151,12 +180,13 @@ class LayerCatalog:
             collection = Collection(
                 type="Table",
                 id="user_data." + obj["id"],
-                table=table,
+                table=obj["table_name"],
                 schema="user_data",
                 id_column=id_col,
                 geometry_column=geom_col,
                 table_columns=columns,
                 properties=columns,
+                distributed=obj["distributed"],
             )
             # Append collection to collection object
             collections["user_data." + obj["id"]] = collection
@@ -184,5 +214,3 @@ class LayerCatalog:
         layer_objs = await self.get(conn=conn)
         collections = self.build_collection(layer_objs)
         return Catalog(collections=collections)
-
-
