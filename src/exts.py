@@ -382,7 +382,7 @@ def get_mvt_point(
     # Build the custom column selection query
     select_unique_values = ""
     for column in self.table_columns:
-        if column.name not in ["geom", "id", "layer_id"]:
+        if column.name not in ["geom", "id", "layer_id", "h3_3"]:
             select_unique_values += (
                 f"(ARRAY_AGG({column.description}))[1] AS {column.description}, "
             )
@@ -408,7 +408,7 @@ def get_mvt_point(
     q, p = render(
         f"""
         WITH clustered_points AS (
-            SELECT (ARRAY_AGG(layer_id))[1] AS layer_id, {select_unique_values}, (ARRAY_AGG(id))[1] AS id, (ARRAY_AGG(geom))[1] AS geom
+            SELECT (ARRAY_AGG(layer_id))[1] AS layer_id, {select_unique_values}, (ARRAY_AGG(id))[1] AS id, (ARRAY_AGG(h3_3))[1] AS h3_3, (ARRAY_AGG(geom))[1] AS geom
             :from_clause
             :where_clause
             AND cluster_keep = TRUE

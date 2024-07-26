@@ -141,7 +141,9 @@ class LayerCatalog:
 
             # Append layer id column
             layer_id_col = Column(name="layer_id", type="text", description="layer_id")
+            h3_3_col = Column(name="h3_3", type="integer", description="h3_3")
             columns.append(layer_id_col)
+            columns.append(h3_3_col)
 
             # Loop through attributes and create column objects
             for k in obj["attribute_mapping"]:
@@ -173,7 +175,7 @@ class LayerCatalog:
                 geom_col = None
 
             # Append ID column
-            id_col = Column(name="id", description="id", type="integer")
+            id_col = Column(name="id", description="id", type="uuid")
             columns.append(id_col)
 
             # Define collection
