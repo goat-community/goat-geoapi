@@ -104,7 +104,7 @@ class LayerCatalog:
                     THEN feature_layer_type || '_' || feature_layer_geometry_type || '_' || replace(user_id::text, '-', '')
                     WHEN feature_layer_geometry_type IS NOT NULL
                     THEN feature_layer_geometry_type || '_' || replace(user_id::text, '-', '')
-                    ELSE replace(user_id::text, '-', '')
+                    ELSE 'no_geometry_' || replace(user_id::text, '-', '')
                     END AS table_name
                 FROM customer.layer l, LATERAL ST_Envelope(extent) e
                 WHERE type IN ('feature', 'table')
@@ -124,7 +124,7 @@ class LayerCatalog:
                         AND pg_class.relnamespace = 'user_data'::regnamespace
                     ) j ON TRUE
                 )
-                SELECT jsonb_build_object('layer_id', id, 'user_id', replace(user_id::text, '-', ''), 'id', replace(id::text, '-', ''), 'name', name, 
+                SELECT jsonb_build_object('type', "type", 'layer_id', id, 'user_id', replace(user_id::text, '-', ''), 'id', replace(id::text, '-', ''), 'name', name, 
                         'bounds', COALESCE(array[xmin, ymin, xmax, ymax], ARRAY[-180, -90, 180, 90]),
                         'attribute_mapping', attribute_mapping, 'feature_layer_type', feature_layer_type, 'geom_type', feature_layer_geometry_type, 'table_name', table_name, 'distributed', distributed)
                 FROM checked_distributed;
@@ -141,24 +141,27 @@ class LayerCatalog:
 
             # Append layer id column
             layer_id_col = Column(name="layer_id", type="text", description="layer_id")
-            h3_3_col = Column(name="h3_3", type="integer", description="h3_3")
             columns.append(layer_id_col)
-            columns.append(h3_3_col)
+
+            if obj["type"] != "table":
+                h3_3_col = Column(name="h3_3", type="integer", description="h3_3")
+                columns.append(h3_3_col)
 
             # Loop through attributes and create column objects
-            for k in obj["attribute_mapping"]:
-                # Make data_type double precision if float as the Column does not know float as term (only float8).
-                data_type = (
-                    k.split("_")[0]
-                    if k.split("_")[0] != "float"
-                    else "double precision"
-                )
-                column = Column(
-                    name=obj["attribute_mapping"][k],
-                    type=data_type,
-                    description=k,
-                )
-                columns.append(column)
+            if obj["attribute_mapping"] is not None:
+                for k in obj["attribute_mapping"]:
+                    # Make data_type double precision if float as the Column does not know float as term (only float8).
+                    data_type = (
+                        k.split("_")[0]
+                        if k.split("_")[0] != "float"
+                        else "double precision"
+                    )
+                    column = Column(
+                        name=obj["attribute_mapping"][k],
+                        type=data_type,
+                        description=k,
+                    )
+                    columns.append(column)
 
             # Get geometry column if geom_type is not None
             if obj["geom_type"]:
