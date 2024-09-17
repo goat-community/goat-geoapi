@@ -42,6 +42,7 @@ psycopg2 = "^2.9.7"
 tipg = "0.6.1"
 
 
+sentry-sdk = {extras = ["fastapi"], version = "^2.14.0"}
 [tool.poetry.group.dev.dependencies]
 ruff = "^0.0.269"
 black = "^23.3.0"

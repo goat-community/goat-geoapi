@@ -6,6 +6,8 @@ https://github.com/developmentseed/tipg
 The original code/repository is licensed under MIT License.
 ---------------------------------------------------------------------------------
 """
+import sentry_sdk
+import os
 
 from contextlib import asynccontextmanager
 from tipg import __version__ as tipg_version
@@ -49,6 +51,13 @@ postgres_settings = PostgresSettings()
 db_settings = DatabaseSettings()
 custom_sql_settings = CustomSQLSettings()
 
+
+if os.getenv("SENTRY_DSN") and os.getenv("ENVIRONMENT"):
+    sentry_sdk.init(
+        dsn=os.getenv("SENTRY_DSN"),
+        environment=os.getenv("ENVIRONMENT"),
+        traces_sample_rate=1.0 if os.getenv("ENVIRONMENT") == "prod" else 0.1,
+    )
 
 # Monkey patch the function that need modification
 Operator.OPERATORS = OperatorPatch.OPERATORS
@@ -108,7 +117,6 @@ ogc_api.router.routes = ogc_api.router.routes[1:]
 app.include_router(ogc_api.router)
 app.add_middleware(CacheControlMiddleware, cachecontrol=settings.cachecontrol)
 app.add_middleware(CompressionMiddleware)
-
 
 @app.get(
     "/healthz",
