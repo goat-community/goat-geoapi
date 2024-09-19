@@ -493,7 +493,11 @@ async def get_tile(
         )
         debug_query(q, *p)
         async with pool.acquire() as conn:
-            columns = await conn.fetch(q, *p)
+            columns = await conn.fetch(
+                q,
+                *p,
+                timeout=settings.SQL_QUERY_TIMEOUT,
+            )
 
         if len(columns) == 2:
             # Check the total feature count of the layer and therefore adapt the where query to only layer_id
@@ -525,7 +529,11 @@ async def get_tile(
                 limit=clauses.Limit(settings.MIN_FEATURE_CNT_CLUSTERING),
             )
             async with pool.acquire() as conn:
-                count = await conn.fetchval(q, *p)
+                count = await conn.fetchval(
+                    q,
+                    *p,
+                    timeout=settings.SQL_QUERY_TIMEOUT,
+                )
 
             if count >= limit:
                 q, p = self.get_mvt_point(
@@ -560,7 +568,11 @@ async def get_tile(
         )
         debug_query(q, *p)
         async with pool.acquire() as conn:
-            h3_3_grids = await conn.fetch(q, *p)
+            h3_3_grids = await conn.fetch(
+                q,
+                *p,
+                timeout=settings.SQL_QUERY_TIMEOUT,
+            )
             h3_3_grids = [row["h3_3"] for row in h3_3_grids]
 
         # Build query for each h3_3_grid and merge with union all
