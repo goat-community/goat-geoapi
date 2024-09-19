@@ -28,15 +28,14 @@ from tipg.filter.filters import bbox_to_wkt
 from inspect import signature
 from buildpg.funcs import any
 from buildpg.logic import Func
-from buildpg import logic, render
+from buildpg import render
 from tipg.settings import MVTSettings
 from tipg.errors import (
     InvalidGeometryColumnName,
     InvalidLimit,
 )
 
-
-from buildpg import V, S, render
+from src.config import settings
 
 
 def show(component):
@@ -452,10 +451,7 @@ async def get_tile(
 ):
     """Build query to get Vector Tile."""
 
-    # TODO: Define this in the .env. For now changes where not taken effect from .env. Fix this.
-    mvt_settings.max_features_per_tile = 15000
-    min_zoom_clustering = 11
-    min_feature_cnt_clustering = 50000
+    mvt_settings.max_features_per_tile = settings.MAX_FEATURES_PER_TILE
 
     limit = limit or mvt_settings.max_features_per_tile
     geometry_column = self.get_geometry_column(geom)
@@ -480,7 +476,10 @@ async def get_tile(
         order_by = "ORDER BY ST_AREA(geom) DESC"
 
     # If the layer is a point layer and the zoom level is less than 11, use clustering
-    if geometry_column.geometry_type == "point" and tile.z < min_zoom_clustering:
+    if (
+        geometry_column.geometry_type == "point"
+        and tile.z < settings.MIN_ZOOM_CLUSTERING
+    ):
         # Check if column h3_group and cluster_keep exists
         q, p = render(
             """
@@ -523,7 +522,7 @@ async def get_tile(
                 select_limit=select_limit,
                 from_limit=from_limit,
                 where_limit=where_cnt,
-                limit=clauses.Limit(min_feature_cnt_clustering),
+                limit=clauses.Limit(settings.MIN_FEATURE_CNT_CLUSTERING),
             )
             async with pool.acquire() as conn:
                 count = await conn.fetchval(q, *p)
@@ -544,7 +543,11 @@ async def get_tile(
                     limit=limit,
                 )
                 async with pool.acquire() as conn:
-                    return await conn.fetchval(q, *p)
+                    return await conn.fetchval(
+                        q,
+                        *p,
+                        timeout=settings.SQL_QUERY_TIMEOUT,
+                    )
 
     # Check if distributed table to get relevant h3_3_grids
     if self.distributed is True:
@@ -647,7 +650,11 @@ async def get_tile(
         )
 
     async with pool.acquire() as conn:
-        return await conn.fetchval(q, *p)
+        return await conn.fetchval(
+            q,
+            *p,
+            timeout=settings.SQL_QUERY_TIMEOUT,
+        )
 
 
 @property
