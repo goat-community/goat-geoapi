@@ -11,10 +11,6 @@
     "mounts": [
         "source=${localWorkspaceFolder}/../..,target=/goat,type=bind,consistency=cached"
     ],
-    "remoteEnv": {
-        "GIT_WORK_TREE": "/goat",
-        "GIT_DIR": "/goat/.git"
-    },
     "customizations": {
         "vscode": {
             "extensions": [
