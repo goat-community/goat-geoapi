@@ -69,12 +69,16 @@ class LayerCatalog:
         print(
             f"Received notification on channel {channel}: {operation} on layer {layer_id}"
         )
-        if operation == "UPDATE":
-            await self.update_insert(layer_id, conn)
-        elif operation == "DELETE":
-            await self.delete(layer_id)
-        elif operation == "INSERT":
-            await self.update_insert(layer_id, conn)
+        new_conn = await asyncpg.connect(str(PostgresSettings().database_url))
+        try:
+            if operation == "UPDATE":
+                await self.update_insert(layer_id, new_conn)
+            elif operation == "DELETE":
+                await self.delete(layer_id)
+            elif operation == "INSERT":
+                await self.update_insert(layer_id, new_conn)
+        finally:
+            await new_conn.close()
 
     async def listener_reconnect_handler(self, conn):
         """Reconnect handler"""
@@ -114,7 +118,7 @@ class LayerCatalog:
                 (
                     SELECT w.*, CASE WHEN table_name_distributed IS NULL THEN FALSE ELSE TRUE END AS distributed
                     FROM with_bounds w
-                    LEFT JOIN LATERAL 
+                    LEFT JOIN LATERAL
                     (
                         SELECT pg_dist_partition.logicalrelid::regclass AS table_name_distributed
                         FROM pg_class
@@ -124,7 +128,7 @@ class LayerCatalog:
                         AND pg_class.relnamespace = 'user_data'::regnamespace
                     ) j ON TRUE
                 )
-                SELECT jsonb_build_object('type', "type", 'layer_id', id, 'user_id', replace(user_id::text, '-', ''), 'id', replace(id::text, '-', ''), 'name', name, 
+                SELECT jsonb_build_object('type', "type", 'layer_id', id, 'user_id', replace(user_id::text, '-', ''), 'id', replace(id::text, '-', ''), 'name', name,
                         'bounds', COALESCE(array[xmin, ymin, xmax, ymax], ARRAY[-180, -90, 180, 90]),
                         'attribute_mapping', attribute_mapping, 'feature_layer_type', feature_layer_type, 'geom_type', feature_layer_geometry_type, 'table_name', table_name, 'distributed', distributed)
                 FROM checked_distributed;
